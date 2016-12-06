@@ -2,10 +2,14 @@ import argparse
 import sys
 import itertools
 import codecs
+import shutil
+import os
+
 
 try:
     import cassandra
     import cassandra.concurrent
+    from boto3.session import Session
 except ImportError:
     sys.exit('Python Cassandra driver not installed. You might try \"pip install cassandra-driver\".')
 
@@ -278,6 +282,27 @@ def export_data(session):
 
     f.close()
 
+    if args.compress:
+        shutil.make_archive(args.export_file, 'zip', None, args.export_file)
+
+    if args.s3_upload:
+        bucket = s3_upload(args.s3_bucket_name, args.aws_access_key, args.aws_secret_key)
+        if args.compress:
+            bucket.upload_file(args.export_file + '.zip', args.export_file + '.zip')
+        else:
+            bucket.upload_file(args.export_file, args.export_file)             
+
+
+
+def s3_upload(bucket_name, access_key, secret_key):
+    conn = Session(
+        aws_access_key_id=access_key,aws_secret_access_key=secret_key,
+        )
+
+    s3 = conn.resource('s3')
+    bucket = s3.Bucket(bucket_name)
+    return bucket
+
 def get_credentials(self):
     return {'username': args.username, 'password': args.password}
 
@@ -319,6 +344,9 @@ def cleanup_cluster(session):
     session.cluster.shutdown()
     session.shutdown()
 
+def cleanup_export_file(file_name):
+    for file in file_name:
+        os.remove(file)
 
 def main():
     global args
@@ -338,6 +366,12 @@ def main():
     parser.add_argument('--quiet', help='quiet progress logging', action='store_true')
     parser.add_argument('--sync', help='import data in synchronous mode (default asynchronous)', action='store_true')
     parser.add_argument('--username', help='set username for auth (only if protocol-version is set)')
+    parser.add_argument('--s3-upload', help='upload export file to amazon s3', action='store_true')
+    parser.add_argument('--s3-bucket-name', help='define s3 bucket name')
+    parser.add_argument('--aws-access-key', help='define aws access key')
+    parser.add_argument('--aws-secret-key', help='define aws secret key')
+    parser.add_argument('--compress', help='enable compression to export file', action='store_true')
+    parser.add_argument('--clean-up', help='remove export file after upload', action='store_true')
     args = parser.parse_args()
 
     if args.import_file is None and args.export_file is None:
@@ -348,6 +382,10 @@ def main():
         sys.stderr.write('--import-file and --export-file can\'t be specified at the same time\n')
         sys.exit(1)
 
+    if args.s3_upload and (args.aws_access_key is None or args.aws_secret_key is None or args.s3_bucket_name is None):
+        sys.stderr.write('--aws-access-key, --aws-secret-key or --s3-bucket-name must be specified when --s3-upload is enable\n')
+        sys.exit(1)
+
     session = setup_cluster()
 
     if args.import_file:
@@ -356,6 +394,13 @@ def main():
         export_data(session)
 
     cleanup_cluster(session)
+
+    if args.clean_up:
+        if args.compress:
+            cleanup_export_file([args.export_file +".zip", args.export_file])
+        else:
+            cleanup_export_file([args.export_file])
+        
 
 
 if __name__ == '__main__':
